@@ -1,8 +1,11 @@
-const e = event.body.event;
 const { WebClient } = require("@slack/web-api");
+
 const slack = new WebClient(params.slack_bot_api_token);
+
+const e = event.body.event;
 const yes = ["white_check_mark", "heavy_check_mark"];
 const no = ["no_good", "x"];
+
 if (e.type === "app_mention") {
   if (e.text.match(/mastermind/gi)) {
     if (e.text.match(/who/gi)) {
@@ -25,12 +28,33 @@ if (e.type === "app_mention") {
       icon_emoji: `:lord-chaos:`,
     });
   }
+
   if (e.text.match(/clue/gi)) {
-    const { messages } = await slack.conversations.history({
-      channel: $checkpoint.channel,
-      oldest: $checkpoint.start,
-      limit: 200,
-    });
+    const messages = await (async () => {
+      let allMessages = [];
+      let cursor;
+      while (true) {
+        const params = {
+          channel: $checkpoint.channel,
+          limit: 200,
+          ...(cursor ? { cursor } : { oldest: $checkpoint.start }),
+        };
+        const {
+          messages,
+          response_metadata,
+        } = await slack.conversations.history(params);
+        allMessages = [...allMessages, ...messages];
+        if (
+          response_metadata &&
+          response_metadata.next_cursor &&
+          response_metadata.next_cursor.length > 0
+        ) {
+          cursor = response_metadata.next_cursor;
+          continue;
+        }
+        return allMessages;
+      }
+    })();
     const clues = messages
       .filter((m) => $checkpoint.clues[m.ts])
       .map((m) => {
@@ -50,6 +74,7 @@ if (e.type === "app_mention") {
     });
   }
 }
+
 if (e.type === "reaction_added" && e.user === $checkpoint.mastermind) {
   if (yes.includes(e.reaction)) {
     $checkpoint.clues[e.item.ts] = "yes";
@@ -58,6 +83,7 @@ if (e.type === "reaction_added" && e.user === $checkpoint.mastermind) {
     $checkpoint.clues[e.item.ts] = "no";
   }
 }
+
 if (e.type === "reaction_removed" && e.user === $checkpoint.mastermind) {
   if ([...yes, ...no].includes(e.reaction)) {
     $checkpoint.clues[e.item.ts] = null;
