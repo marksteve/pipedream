@@ -3,8 +3,11 @@ const { WebClient } = require("@slack/web-api");
 const slack = new WebClient(params.slack_bot_api_token);
 
 const e = event.body.event;
-const yes = ["white_check_mark", "heavy_check_mark"];
-const no = ["no_good", "x"];
+const emojis = {
+  yes: ["white_check_mark", "heavy_check_mark"],
+  no: ["no_good", "x"],
+  correct: ["tada"],
+};
 
 if (e.type === "app_mention") {
   if (e.text.match(/mastermind/gi)) {
@@ -20,7 +23,6 @@ if (e.type === "app_mention") {
       mastermind: e.user,
       channel: e.channel,
       start: e.ts,
-      clues: {},
     };
     await slack.chat.postMessage({
       channel: $checkpoint.channel,
@@ -28,22 +30,28 @@ if (e.type === "app_mention") {
       icon_emoji: `:lord-chaos:`,
     });
   }
+}
 
+if (e.type === "message" && !e.bot_id) {
   if (e.text.match(/clue/gi)) {
     const messages = await (async () => {
-      let allMessages = [];
+      let all = [];
       let cursor;
       while (true) {
         const params = {
           channel: $checkpoint.channel,
           limit: 200,
-          ...(cursor ? { cursor } : { oldest: $checkpoint.start }),
+          cursor,
         };
-        const {
-          messages,
+        let {
+          messages: page,
           response_metadata,
         } = await slack.conversations.history(params);
-        allMessages = [...allMessages, ...messages];
+        page = page.filter((m) => m.ts > $checkpoint.start);
+        all = [...all, ...page];
+        if (page.some((m) => m.ts <= $checkpoint.start)) {
+          return all;
+        }
         if (
           response_metadata &&
           response_metadata.next_cursor &&
@@ -52,40 +60,38 @@ if (e.type === "app_mention") {
           cursor = response_metadata.next_cursor;
           continue;
         }
-        return allMessages;
+        return all;
       }
     })();
     const clues = messages
-      .filter((m) => $checkpoint.clues[m.ts])
       .map((m) => {
-        const answer = {
-          yes: ":white_check_mark:",
-          no: ":x:",
-        }[$checkpoint.clues[m.ts]];
-        return `${answer} ${m.text}`;
-      });
+        const yes = (m.reactions || []).some((r) =>
+          emojis.yes.includes(r.name)
+        );
+        const no = (m.reactions || []).some((r) => emojis.no.includes(r.name));
+        const correct = (m.reactions || []).some((r) =>
+          emojis.correct.includes(r.name)
+        );
+        switch (true) {
+          case yes:
+            return `:white_check_mark: ${m.text}`;
+          case no:
+            return `:x: ${m.text}`;
+          case correct:
+            return `:tada: ${m.text}`;
+          default:
+            return null;
+        }
+      })
+      .filter((m) => m !== null);
     await slack.chat.postMessage({
-      channel: $checkpoint.channel,
+      channel: e.user,
       text:
         clues.length > 0
           ? clues.join("\n")
           : `I'm afraid none has been offered.`,
       icon_emoji: `:lord-chaos:`,
     });
-  }
-}
-
-if (e.type === "reaction_added" && e.user === $checkpoint.mastermind) {
-  if (yes.includes(e.reaction)) {
-    $checkpoint.clues[e.item.ts] = "yes";
-  }
-  if (no.includes(e.reaction)) {
-    $checkpoint.clues[e.item.ts] = "no";
-  }
-}
-
-if (e.type === "reaction_removed" && e.user === $checkpoint.mastermind) {
-  if ([...yes, ...no].includes(e.reaction)) {
-    $checkpoint.clues[e.item.ts] = null;
+    console.log(`Total of ${clues.length} clues`);
   }
 }
